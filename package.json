@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "es6-shim": "^0.35.6",
+    "serialport": "^9.2.5",
+    "split": "^1.0.1",
+    "xespruino": "https://github.com/gdanov/XEspruinoTools.git"
+  }
+}
