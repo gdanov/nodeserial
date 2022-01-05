@@ -1,5 +1,10 @@
+const assert = require('assert');
+const { StringDecoder } = require('string_decoder');
+const buffStrDecoder = new StringDecoder('utf8');
+
 const SerialPort = require('serialport');
-const xesp = require('xespruino');
+
+const xesp = require('espruino');
 
 const { hideBin } = require('yargs/helpers');
 const yargs = require('yargs/yargs');
@@ -7,34 +12,44 @@ const argv = yargs(hideBin(process.argv)).alias('p', 'port').argv;
 
 //console.log('>>>>>>', argv);
 let tty_port = argv.port || argv._[0];
+assert(tty_port, 'you must provide TTY port');
 console.log('using TTY port ', tty_port);
 
-const portName = tty_port; //'/dev/tty.SLAB_USBtoUART'
-const portBaud = 115200;
+xesp.init(() => {
+  console.log('=== Espruino Tools initialized. ===');
 
-const myPort = new SerialPort(portName, { baudRate: portBaud });
+  Espruino.Config.BLUETOOTH_LOW_ENERGY = false;
+  Espruino.Config.BAUD_RATE = 115200;
 
-let parser = new SerialPort.parsers.Readline(); // make a new parser to read ASCII lines
-myPort.pipe(parser);
-//.pipe (new SerialPort.parsers.Ready ({delimiter: String.fromCharCode (...[ 27, 91, 63, 55, 108 ])}));
+  Espruino.Core.Serial.getPorts((ports) => {
+    //    console.log('devices:', Espruino.Core.Serial.devices);
+    //console.log('!!ports:', ports);
+  });
+
+  Espruino.Core.Serial.open(
+    tty_port,
+    (conncb) => {
+      let parser = new SerialPort.parsers.Readline();
+      parser.on('data', (str) => console.log('|', str));
+      let prevReader = Espruino.Core.Serial.startListening((data) => {
+        parser.write(new Uint8Array(data));
+      });
+    },
+    (discb) => {}
+  );
+});
+
+function atob(a) {
+  return new Buffer.from(a, 'base64').toString('binary');
+}
+
+function btoa(b) {
+  return new Buffer.from(b).toString('base64');
+}
 
 function showPortOpen() {
   console.log('port open. Data rate: ' + myPort.baudRate);
   console.log('-------------');
-}
-
-function readSerialData(data) {
-  //  console.log(data.charCodeAt (0), (new TextEncoder ()).encode (data), "|\n", data);
-  console.log(data);
-
-  if (data == String.fromCharCode(...[27, 91, 63, 55, 108, 13])) {
-    // better detect ready
-    myPort.emit('ready');
-  }
-
-  if (data.startsWith('|____|___|  _|_| |___|_|_|_|___|')) {
-    // detect restarted
-  }
 }
 
 function showPortClose() {
@@ -45,30 +60,15 @@ function showError(error) {
   console.log('Serial port error: ' + error);
 }
 
-myPort.on('open', showPortOpen);
-parser.on('data', readSerialData);
-myPort.on('close', showPortClose);
-myPort.on('error', showError);
-
-let onReady = null;
-
-myPort.on('ready', () => {
-  console.log('READY?');
-  if (onReady) {
-    onReady();
-    onReady = null;
-  }
-});
-
-process.stdin.pipe(require('split')('\n', null, { maxLength: 999999 })).on('data', processStdinLine);
+process.stdin //
+  .pipe(require('split')('\n', null, { maxLength: 999999 }))
+  .on('data', processStdinLine);
 
 // ESC[8m 	ESC[28m 	TTY set hidden/invisible mode
 const hide_start = String.fromCharCode(...[27, 91, 56, 109]);
 const hide_end = String.fromCharCode(...[27, 91, 50, 56, 109]);
 let accumulating = false;
 let accumulator = '';
-
-const test = true;
 
 function processStdinLine(line) {
   // we can have single-line code push so this is why code is structured this way
@@ -87,27 +87,45 @@ function processStdinLine(line) {
     }
     accumulator += atob(todo);
   } else {
-    myPort.write(line + '\n');
+    let handoff = false;
+    let prevl = Espruino.Core.Serial.startListening((data) => {
+      if (!handoff) {
+        let dstr = Buffer.from(data).toString();
+        let chunks = dstr.split('\n');
+
+        //        console.log('--', chunks);
+
+        if (chunks.length > 1) {
+          handoff = true;
+          Espruino.Core.Serial.startListening(prevl);
+          // there's '>' without LF at the end which I can't always remove, but do my best
+          let totrim =
+            chunks[chunks.length - 1] == '>' //
+              ? data.byteLength - 1
+              : data.byteLength;
+
+          // remove cr+lf
+          prevl(data.slice(chunks[0].length + 1, totrim));
+        } // else skip, it's something long
+      } else {
+        // drain in case there's more buffered
+        prevl(data);
+      }
+    });
+
+    Espruino.Core.Serial.write(line + '\n', false, () => {});
   }
 
   if (line.endsWith(hide_end)) {
     accumulating = false;
-    //console.log(">>>", accumulator, "<<<");
+    //console.log('>>>', accumulator, '<<<');
 
-    onReady = () => {
-      xesp.transformCode(accumulator, function (code) {
-        myPort.write(
-          code
-            .split('\n')
-            // you can use '\x10' literal but prettier craps it out replacing the quotes
-            .map((line) => String.fromCharCode(0x10) + line)
-            .join('\n')
-        );
-        myPort.drain();
-        console.log('###### ready ######');
+    Espruino.callProcessor('transformForEspruino', accumulator, function (code) {
+      Espruino.Core.CodeWriter.writeToEspruino(code, function () {
+        setTimeout(function () {
+          //Espruino.Core.Serial.write('1+2\n', true, () => {});
+        }, 500);
       });
-    };
-
-    myPort.write('reset();\n');
+    });
   }
 }
