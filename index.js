@@ -92,20 +92,12 @@ function processStdinLine(line) {
       if (!handoff) {
         let dstr = Buffer.from(data).toString();
         let chunks = dstr.split('\n');
-
-        //        console.log('--', chunks);
-
         if (chunks.length > 1) {
           handoff = true;
           Espruino.Core.Serial.startListening(prevl);
-          // there's '>' without LF at the end which I can't always remove, but do my best
-          let totrim =
-            chunks[chunks.length - 1] == '>' //
-              ? data.byteLength - 1
-              : data.byteLength;
-
+          // there's '>' without LF at the end which I can't always remove and I'm gonna live with it
           // remove cr+lf
-          prevl(data.slice(chunks[0].length + 1, totrim));
+          prevl(data.slice(chunks[0].length + 1));
         } // else skip, it's something long
       } else {
         // drain in case there's more buffered
